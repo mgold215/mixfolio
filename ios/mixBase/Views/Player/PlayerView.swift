@@ -133,40 +133,22 @@ struct PlayerView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
+                // While a track is up, EVERY control lives in the single bar
+                // the Now Playing screen draws along its top (nowPlayingTopBar)
+                // — the nav bar goes empty rather than scattering icons across
+                // two corners. The track-list state keeps its plain toolbar.
                 ToolbarItem(placement: .navigationBarLeading) {
-                    AirPlayRoutePicker()
-                        .frame(width: 28, height: 28)
-                }
-                // Share the current track's private listening link — only when
-                // the track actually has one. No marketing-site fallback: the
-                // homepage shows subscription pricing, which the app must not
-                // route users to (Guideline 3.1.1).
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    if let shareURL {
-                        ShareLink(item: shareURL) {
-                            Image(systemName: "square.and.arrow.up")
-                                .foregroundColor(Color(hex: "#2dd4bf"))
-                        }
+                    if audioService.currentVersion == nil {
+                        AirPlayRoutePicker()
+                            .frame(width: 28, height: 28)
                     }
                 }
-                // Quick mix notes on the playing mix. Shows only when the
-                // track resolves to one of YOUR OWN version rows — hidden for
-                // the synthetic instrumental and for other artists' feed
-                // tracks, but alive for your own song however it was started
-                // (see playingOwnVersion).
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    if playingOwnVersion != nil {
-                        Button(action: { showNotes = true }) {
-                            Image(systemName: "note.text")
+                    if audioService.currentVersion == nil {
+                        Button(action: { showQueue = true }) {
+                            Image(systemName: "list.bullet")
                                 .foregroundColor(Color(hex: "#2dd4bf"))
                         }
-                    }
-                }
-                // Open the editable "Up Next" queue.
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { showQueue = true }) {
-                        Image(systemName: "list.bullet")
-                            .foregroundColor(Color(hex: "#2dd4bf"))
                     }
                 }
             }
@@ -228,6 +210,10 @@ struct PlayerView: View {
     @ViewBuilder
     private func nowPlayingScreen(version: Version) -> some View {
         VStack(spacing: 0) {
+            // One clear control bar along the top — see nowPlayingTopBar.
+            nowPlayingTopBar
+                .padding(.top, 4)
+
             Spacer(minLength: 16)
 
             // Artwork — large, centered, with a soft teal glow
@@ -340,6 +326,63 @@ struct PlayerView: View {
         .task(id: version.projectId) {
             await loadVersionsForCurrentProject(projectId: version.projectId)
         }
+    }
+
+    // One clear bar holding every Now Playing control — AirPlay, Share, notes,
+    // queue — evenly spread in a single rounded container instead of icons
+    // scattered across the nav bar's two corners. Share is deliberately NOT
+    // another thin line icon: a filled accent pill with a label, so it can't
+    // be mistaken for AirPlay at a glance. Share hides for tracks without a
+    // link (another artist's feed track) and notes for mixes that aren't
+    // yours; AirPlay and queue always ride.
+    private var nowPlayingTopBar: some View {
+        HStack(spacing: 0) {
+            AirPlayRoutePicker()
+                .frame(width: 28, height: 28)
+                .frame(maxWidth: .infinity)
+
+            if let shareURL {
+                ShareLink(item: shareURL) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Share")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .foregroundColor(Color(hex: "#080808"))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(Color(hex: "#2dd4bf")))
+                }
+                .frame(maxWidth: .infinity)
+            }
+
+            if playingOwnVersion != nil {
+                Button(action: { showNotes = true }) {
+                    Image(systemName: "note.text")
+                        .font(.system(size: 18))
+                        .foregroundColor(Color(hex: "#2dd4bf"))
+                }
+                .frame(maxWidth: .infinity)
+            }
+
+            Button(action: { showQueue = true }) {
+                Image(systemName: "list.bullet")
+                    .font(.system(size: 18))
+                    .foregroundColor(Color(hex: "#2dd4bf"))
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 24)
+                .fill(Color(hex: "#f0f0f0").opacity(0.05))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24)
+                        .stroke(Color(hex: "#f0f0f0").opacity(0.08))
+                )
+        )
+        .padding(.horizontal, 16)
     }
 
     // The private listening link for the playing mix. Prefer the version's own
