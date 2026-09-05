@@ -127,7 +127,9 @@ struct PlayerView: View {
                     trackListScreen
                 }
             }
-            .navigationTitle(audioService.currentVersion != nil ? "Now Playing" : "Player")
+            // No title while a track is up — the artwork and track name ARE the
+            // screen; a "Now Playing" label above them was just noise.
+            .navigationTitle(audioService.currentVersion != nil ? "" : "Player")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
@@ -147,11 +149,13 @@ struct PlayerView: View {
                         }
                     }
                 }
-                // Quick mix notes on the playing mix. Hidden while the
-                // synthetic instrumental is up (versionNumber 0 — it has no
-                // mb_versions row to pin a note to).
+                // Quick mix notes on the playing mix. Shows only when the
+                // track resolves to one of YOUR OWN version rows — hidden for
+                // the synthetic instrumental and for other artists' feed
+                // tracks, but alive for your own song however it was started
+                // (see playingOwnVersion).
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    if let v = audioService.currentVersion, v.versionNumber > 0 {
+                    if playingOwnVersion != nil {
                         Button(action: { showNotes = true }) {
                             Image(systemName: "note.text")
                                 .foregroundColor(Color(hex: "#2dd4bf"))
@@ -173,7 +177,7 @@ struct PlayerView: View {
                 QueueSheet(isLoading: isLoading)
             }
             .sheet(isPresented: $showNotes) {
-                if let v = audioService.currentVersion, v.versionNumber > 0 {
+                if let v = playingOwnVersion {
                     MixNotesSheet(
                         version: v,
                         trackName: audioService.currentTrackName ?? "Unknown Track"
@@ -338,12 +342,30 @@ struct PlayerView: View {
         }
     }
 
-    // The private listening link for the current version, matching the web app's
-    // /share/<token> route. Nil when the track has no token — the share button
-    // hides rather than falling back to the marketing site (Guideline 3.1.1).
+    // The private listening link for the playing mix. Prefer the version's own
+    // token (deep-links that exact mix); fall back to the PROJECT token — the
+    // same token the web player shares, resolving to the latest mix — because
+    // feed playback builds synthetic Versions with shareToken nil even for
+    // your own songs, which silently vanished the share button. playingProject
+    // is owner-scoped by RLS, so the fallback can never surface a link for
+    // another artist's track. Nil hides the button rather than falling back to
+    // the marketing site (Guideline 3.1.1).
     private var shareURL: URL? {
-        guard let token = audioService.currentVersion?.shareToken, !token.isEmpty else { return nil }
+        let candidates = [audioService.currentVersion?.shareToken, playingProject?.shareToken]
+        guard let token = candidates.compactMap({ $0 }).first(where: { !$0.isEmpty }) else { return nil }
         return URL(string: "https://mixbase.app/share/\(token)")
+    }
+
+    // The playing track's REAL row, when it is one of the user's own mixes.
+    // allVersions is owner-scoped, so this resolves to nil for another
+    // artist's feed track and for the synthetic instrumental (its minted id
+    // matches no row) — and it RESTORES the real row for your own song played
+    // from the feed, whose synthetic Version (versionNumber 0, no token)
+    // would otherwise fail any versionNumber-based check. Gates the notes
+    // button and feeds the sheet the genuine version.
+    private var playingOwnVersion: Version? {
+        guard let current = audioService.currentVersion else { return nil }
+        return allVersions.first { $0.id == current.id }
     }
 
     // MARK: - Track List (nothing playing)
