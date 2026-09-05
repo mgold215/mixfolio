@@ -34,6 +34,13 @@ struct Project: Codable, Identifiable {
     // never part of share pages or the feed.
     var instrumentalUrl: String?
 
+    // Project-level share token — /share/<token> resolves it to the LATEST
+    // mix, which is why the web player shares this rather than a version
+    // token. The Now Playing share button falls back to it when the playing
+    // Version carries no token of its own (feed playback builds synthetic
+    // Versions with shareToken nil, even for your own songs).
+    var shareToken: String?
+
     // When this project was first created
     let createdAt: Date
 
@@ -52,6 +59,7 @@ struct Project: Codable, Identifiable {
         case keySignature = "key_signature"
         case visualizerUrl = "visualizer_url"
         case instrumentalUrl = "instrumental_url"
+        case shareToken = "share_token"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }

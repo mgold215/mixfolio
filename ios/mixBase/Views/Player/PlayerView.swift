@@ -127,42 +127,28 @@ struct PlayerView: View {
                     trackListScreen
                 }
             }
-            .navigationTitle(audioService.currentVersion != nil ? "Now Playing" : "Player")
+            // No title while a track is up — the artwork and track name ARE the
+            // screen; a "Now Playing" label above them was just noise.
+            .navigationTitle(audioService.currentVersion != nil ? "" : "Player")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
+                // While a track is up, EVERY control lives in the single bar
+                // the Now Playing screen draws along its top (nowPlayingTopBar)
+                // — the nav bar goes empty rather than scattering icons across
+                // two corners. The track-list state keeps its plain toolbar.
                 ToolbarItem(placement: .navigationBarLeading) {
-                    AirPlayRoutePicker()
-                        .frame(width: 28, height: 28)
-                }
-                // Share the current track's private listening link — only when
-                // the track actually has one. No marketing-site fallback: the
-                // homepage shows subscription pricing, which the app must not
-                // route users to (Guideline 3.1.1).
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    if let shareURL {
-                        ShareLink(item: shareURL) {
-                            Image(systemName: "square.and.arrow.up")
-                                .foregroundColor(Color(hex: "#2dd4bf"))
-                        }
+                    if audioService.currentVersion == nil {
+                        AirPlayRoutePicker()
+                            .frame(width: 28, height: 28)
                     }
                 }
-                // Quick mix notes on the playing mix. Hidden while the
-                // synthetic instrumental is up (versionNumber 0 — it has no
-                // mb_versions row to pin a note to).
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    if let v = audioService.currentVersion, v.versionNumber > 0 {
-                        Button(action: { showNotes = true }) {
-                            Image(systemName: "note.text")
+                    if audioService.currentVersion == nil {
+                        Button(action: { showQueue = true }) {
+                            Image(systemName: "list.bullet")
                                 .foregroundColor(Color(hex: "#2dd4bf"))
                         }
-                    }
-                }
-                // Open the editable "Up Next" queue.
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { showQueue = true }) {
-                        Image(systemName: "list.bullet")
-                            .foregroundColor(Color(hex: "#2dd4bf"))
                     }
                 }
             }
@@ -173,7 +159,7 @@ struct PlayerView: View {
                 QueueSheet(isLoading: isLoading)
             }
             .sheet(isPresented: $showNotes) {
-                if let v = audioService.currentVersion, v.versionNumber > 0 {
+                if let v = playingOwnVersion {
                     MixNotesSheet(
                         version: v,
                         trackName: audioService.currentTrackName ?? "Unknown Track"
@@ -224,6 +210,10 @@ struct PlayerView: View {
     @ViewBuilder
     private func nowPlayingScreen(version: Version) -> some View {
         VStack(spacing: 0) {
+            // One clear control bar along the top — see nowPlayingTopBar.
+            nowPlayingTopBar
+                .padding(.top, 4)
+
             Spacer(minLength: 16)
 
             // Artwork — large, centered, with a soft teal glow
@@ -338,12 +328,87 @@ struct PlayerView: View {
         }
     }
 
-    // The private listening link for the current version, matching the web app's
-    // /share/<token> route. Nil when the track has no token — the share button
-    // hides rather than falling back to the marketing site (Guideline 3.1.1).
+    // One clear bar holding every Now Playing control — AirPlay, Share, notes,
+    // queue — evenly spread in a single rounded container instead of icons
+    // scattered across the nav bar's two corners. Share is deliberately NOT
+    // another thin line icon: a filled accent pill with a label, so it can't
+    // be mistaken for AirPlay at a glance. Share hides for tracks without a
+    // link (another artist's feed track) and notes for mixes that aren't
+    // yours; AirPlay and queue always ride.
+    private var nowPlayingTopBar: some View {
+        HStack(spacing: 0) {
+            AirPlayRoutePicker()
+                .frame(width: 28, height: 28)
+                .frame(maxWidth: .infinity)
+
+            if let shareURL {
+                ShareLink(item: shareURL) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Share")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .foregroundColor(Color(hex: "#080808"))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(Color(hex: "#2dd4bf")))
+                }
+                .frame(maxWidth: .infinity)
+            }
+
+            if playingOwnVersion != nil {
+                Button(action: { showNotes = true }) {
+                    Image(systemName: "note.text")
+                        .font(.system(size: 18))
+                        .foregroundColor(Color(hex: "#2dd4bf"))
+                }
+                .frame(maxWidth: .infinity)
+            }
+
+            Button(action: { showQueue = true }) {
+                Image(systemName: "list.bullet")
+                    .font(.system(size: 18))
+                    .foregroundColor(Color(hex: "#2dd4bf"))
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 24)
+                .fill(Color(hex: "#f0f0f0").opacity(0.05))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24)
+                        .stroke(Color(hex: "#f0f0f0").opacity(0.08))
+                )
+        )
+        .padding(.horizontal, 16)
+    }
+
+    // The private listening link for the playing mix. Prefer the version's own
+    // token (deep-links that exact mix); fall back to the PROJECT token — the
+    // same token the web player shares, resolving to the latest mix — because
+    // feed playback builds synthetic Versions with shareToken nil even for
+    // your own songs, which silently vanished the share button. playingProject
+    // is owner-scoped by RLS, so the fallback can never surface a link for
+    // another artist's track. Nil hides the button rather than falling back to
+    // the marketing site (Guideline 3.1.1).
     private var shareURL: URL? {
-        guard let token = audioService.currentVersion?.shareToken, !token.isEmpty else { return nil }
+        let candidates = [audioService.currentVersion?.shareToken, playingProject?.shareToken]
+        guard let token = candidates.compactMap({ $0 }).first(where: { !$0.isEmpty }) else { return nil }
         return URL(string: "https://mixbase.app/share/\(token)")
+    }
+
+    // The playing track's REAL row, when it is one of the user's own mixes.
+    // allVersions is owner-scoped, so this resolves to nil for another
+    // artist's feed track and for the synthetic instrumental (its minted id
+    // matches no row) — and it RESTORES the real row for your own song played
+    // from the feed, whose synthetic Version (versionNumber 0, no token)
+    // would otherwise fail any versionNumber-based check. Gates the notes
+    // button and feeds the sheet the genuine version.
+    private var playingOwnVersion: Version? {
+        guard let current = audioService.currentVersion else { return nil }
+        return allVersions.first { $0.id == current.id }
     }
 
     // MARK: - Track List (nothing playing)
