@@ -3,7 +3,8 @@ import { supabaseAdmin } from '@/lib/supabase'
 import { checkAndIncrementUsage, refundUsage } from '@/lib/tier'
 import { artworkLimiter, rateLimitHeaders , checkUserLimit } from '@/lib/rate-limit'
 import { canonicalUuid } from '@/lib/validators'
-import { MODEL_ENDPOINTS, MODEL_INPUTS, resolveModelKey, composeLook, composeConstraints } from '@/lib/artwork-models'
+import { MODEL_ENDPOINTS, MODEL_INPUTS, MODEL_INPUTS_MINIMAL, resolveModelKey, composeLook, composePrompt } from '@/lib/artwork-models'
+import { applyFilmFinish } from '@/lib/film-finish'
 
 // Allow up to 2 minutes — Flux 2 Pro can take 30-60s
 export const maxDuration = 120
@@ -62,19 +63,30 @@ export async function POST(request: NextRequest) {
 
   const body = await request.json().catch(() => null)
   if (!body) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
-  const { project_id, collection_id, prompt, model = 'flux', vary = false } = body
+  const { project_id, collection_id, prompt, model, vary = false } = body
 
   if (!prompt?.trim()) {
     return NextResponse.json({ error: 'Prompt is required' }, { status: 400 })
   }
 
-  // Vary layer: append a randomized photographic treatment so repeat runs of
-  // the same subject produce visibly different shots. Composed before the paid
-  // call; echoed back in the response so the UI can show what was applied.
-  // Constraints always ride last: no baked-in text ever (finalize renders the
-  // lockup), and no people unless the artist's own prompt asks for them.
+  // Film finish (grain / vignette / muted palette — see src/lib/film-finish.ts)
+  // is ON unless the client explicitly sends `finish: 'none'`. Default-on so
+  // clients that don't know the field (the iOS app) get the realism pass too.
+  const finish: 'film' | 'none' = body.finish === 'none' ? 'none' : 'film'
+
+  // resolveModelKey collapses any unknown / crafted model (incl. inherited
+  // Object.prototype names like "__proto__") to a real key, so endpoint + input
+  // stay paired and neither can be a non-function/non-URL that throws below.
+  const modelKey = resolveModelKey(model)
+
+  // Prompt composition (src/lib/artwork-models.ts): the artist's subject with
+  // AI-art vocabulary stripped, an optional randomized vary-look so repeat runs
+  // of the same subject produce visibly different shots, the documentary-
+  // photography treatment, and the constraints last — no baked-in text ever
+  // (finalize renders the lockup), no people unless the artist asked for them.
+  // Composed before the paid call; echoed back so the UI can show what ran.
   const look = vary ? composeLook() : null
-  const finalPrompt = [prompt.trim(), look, composeConstraints(prompt)].filter(Boolean).join(', ')
+  const finalPrompt = composePrompt({ userPrompt: prompt.trim(), modelKey, look })
 
   // Two targets: a project's artwork, or a collection's cover. Exactly one id.
   const isCollection = !!collection_id
@@ -142,12 +154,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'AI artwork generation is temporarily unavailable.' }, { status: 503 })
   }
 
-  // resolveModelKey collapses any unknown / crafted model (incl. inherited
-  // Object.prototype names like "__proto__") to a real key, so endpoint + input
-  // stay paired and neither can be a non-function/non-URL that throws below.
-  const modelKey = resolveModelKey(model)
   const endpoint = MODEL_ENDPOINTS[modelKey]
-  const inputFn  = MODEL_INPUTS[modelKey]
 
   // The slot is already reserved, so a network/JSON failure on the paid call must
   // refund — matching pollPrediction's catch below. Without this an outbound
@@ -160,23 +167,35 @@ export async function POST(request: NextRequest) {
     status?: string
     urls?: { get?: string }
   }
+  const createPrediction = (input: Record<string, unknown>) => fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${replicateToken}`,
+      'Content-Type': 'application/json',
+      Prefer: 'wait',
+    },
+    body: JSON.stringify({ input }),
+    // `Prefer: wait` makes Replicate hold the connection open until the
+    // prediction settles, so this call is long-lived BY DESIGN — which is
+    // exactly why it needs an explicit ceiling. undici enforces no response
+    // timeout of its own; without this a stalled socket pins the handler and
+    // the reserved slot indefinitely. A throw here is already refunded by the
+    // enclosing catch.
+    signal: AbortSignal.timeout(CREATE_TIMEOUT_MS),
+  })
   try {
-    replicateRes = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${replicateToken}`,
-        'Content-Type': 'application/json',
-        Prefer: 'wait',
-      },
-      body: JSON.stringify({ input: inputFn(finalPrompt) }),
-      // `Prefer: wait` makes Replicate hold the connection open until the
-      // prediction settles, so this call is long-lived BY DESIGN — which is
-      // exactly why it needs an explicit ceiling. undici enforces no response
-      // timeout of its own; without this a stalled socket pins the handler and
-      // the reserved slot indefinitely. A throw here is already refunded by the
-      // enclosing catch.
-      signal: AbortSignal.timeout(CREATE_TIMEOUT_MS),
-    })
+    replicateRes = await createPrediction(MODEL_INPUTS[modelKey](finalPrompt))
+    // 422 = Replicate rejected the INPUT SHAPE (an optional tuning field the
+    // provider renamed or dropped), not the prompt. Provider schemas move
+    // without notice, and the tuned inputs carry realism knobs (raw mode,
+    // guidance, steps) that can't be exercised from CI. Retry once with the
+    // documented core schema so the user gets a plain generation instead of a
+    // hard error; log loudly so the tuning gets fixed.
+    if (replicateRes.status === 422) {
+      const detail = await replicateRes.text().catch(() => '')
+      console.error(`[generate-artwork] ${modelKey} rejected tuned input (422), retrying minimal:`, detail.slice(0, 500))
+      replicateRes = await createPrediction(MODEL_INPUTS_MINIMAL[modelKey](finalPrompt))
+    }
     prediction = await replicateRes.json()
   } catch (err) {
     await refund()
@@ -208,10 +227,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `No image returned (status: ${prediction.status ?? 'unknown'})` }, { status: 500 })
   }
 
-  // Download generated image — save raw bytes, no stamping. Replicate's
-  // pixels are exactly what the user paid for; any text overlay belongs in
-  // /api/finalize-artwork, not here. Preserving raw bytes also means Finalize
-  // never has to deal with text already burned into the source.
+  // Download generated image — no stamping. Any text overlay belongs in
+  // /api/finalize-artwork, not here, so Finalize never has to deal with text
+  // already burned into the source. The only pass applied before saving is
+  // the (opt-out) film finish below, which changes tone and texture, never
+  // content.
   //
   // The slot is reserved, so a throw fetching/reading the image (CDN blip,
   // stream reset) between Replicate's succeeded prediction and the byte download
@@ -237,6 +257,24 @@ export async function POST(request: NextRequest) {
     console.error('[generate-artwork] image download failed:', err instanceof Error ? err.message : err)
     return NextResponse.json({ error: 'Failed to download generated image. Please try again.' }, { status: 502 })
   }
+
+  // Film finish: grain, soft vignette, slightly muted palette. Best-effort —
+  // the generation is already paid for, so a decode failure here must never
+  // turn a successful prediction into an error; the untouched bytes are saved
+  // instead and the response says so.
+  let finishApplied = false
+  if (finish === 'film') {
+    try {
+      // Seed from the storage timestamp-ish so each generation's grain differs
+      // but any given output is reproducible from its inputs.
+      imageBytes = await applyFilmFinish(imageBytes, { seed: (Date.now() % 2147483647) >>> 0 })
+      contentType = 'image/jpeg'
+      finishApplied = true
+    } catch (err) {
+      console.error('[generate-artwork] film finish failed, saving untouched bytes:', err instanceof Error ? err.message : err)
+    }
+  }
+
   const extension = contentType.includes('webp') ? 'webp'
     : contentType.includes('png') ? 'png'
     : 'jpg'
@@ -293,5 +331,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Saved image but failed to update project. Please retry.' }, { status: 500 })
   }
 
-  return NextResponse.json({ artwork_url: artworkUrl, look })
+  return NextResponse.json({
+    artwork_url: artworkUrl,
+    look,
+    prompt_used: finalPrompt,
+    model: modelKey,
+    finish: finishApplied ? 'film' : 'none',
+  })
 }

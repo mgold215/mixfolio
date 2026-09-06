@@ -46,6 +46,7 @@ const SUITES = [
   'admin-client-role-test.mjs',
   'admin-identity-test.mjs',
   'artwork-models-test.mjs',
+  'film-finish-test.mjs',
   'artwork-history-test.mjs',
   'upload-ownership-test.mjs',
   'uuid-storage-key-test.mjs',

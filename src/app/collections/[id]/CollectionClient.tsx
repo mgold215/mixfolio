@@ -68,6 +68,8 @@ export default function CollectionClient({ collection, initialItems, allProjects
   // single-sourced from IMAGE_MODELS so the two selectors can't drift apart.
   const [coverModel, setCoverModel] = useState<string>(IMAGE_MODELS[0].id)
   const [coverVary, setCoverVary] = useState(true)
+  // Film finish (server-side grain / vignette / muted palette) — on by default.
+  const [coverFilm, setCoverFilm] = useState(true)
   const [generatingCover, setGeneratingCover] = useState(false)
   const [coverError, setCoverError] = useState('')
 
@@ -145,7 +147,7 @@ export default function CollectionClient({ collection, initialItems, allProjects
       const res = await fetch('/api/generate-artwork', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection_id: collection.id, prompt: coverPrompt.trim(), model: coverModel, vary: coverVary }),
+        body: JSON.stringify({ collection_id: collection.id, prompt: coverPrompt.trim(), model: coverModel, vary: coverVary, finish: coverFilm ? 'film' : 'none' }),
       })
       const data = await res.json().catch(() => null)
       if (res.ok && data?.artwork_url) {
@@ -604,7 +606,25 @@ export default function CollectionClient({ collection, initialItems, allProjects
                         style={{ left: coverVary ? '1rem' : '0.125rem' }}
                       />
                     </span>
-                    Vary the look (random lens, light &amp; mood)
+                    Vary the look (random camera, light &amp; weather)
+                  </button>
+                  {/* Film finish toggle — server adds grain, a soft vignette and a
+                      slightly muted palette after generation. Off = untouched pixels. */}
+                  <button
+                    onClick={() => setCoverFilm(v => !v)}
+                    className="flex items-center gap-2 text-[11px] transition-colors"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    <span
+                      className="w-8 h-4 rounded-full relative transition-colors flex-shrink-0"
+                      style={{ backgroundColor: coverFilm ? 'var(--accent)' : 'var(--surface-2)' }}
+                    >
+                      <span
+                        className="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all"
+                        style={{ left: coverFilm ? '1rem' : '0.125rem' }}
+                      />
+                    </span>
+                    Film finish (grain, vignette &amp; muted colour)
                   </button>
                   <textarea
                     value={coverPrompt}

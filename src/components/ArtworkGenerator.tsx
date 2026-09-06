@@ -36,8 +36,14 @@ const POSITION_GRID: Position[] = [
 // The moodmixformat house style. This is the OWNER's personal aesthetic — it
 // pre-fills the prompt only on the owner account (profiles.is_owner); every
 // other artist starts from a blank prompt and their own ideas.
+//
+// Written the way a photographer captions a real building, not the way an
+// AI-art prompt reads: concrete nouns, real materials, ordinary surroundings,
+// nothing about "hyper-realistic" or "surreal" (the server strips those words
+// anyway — they are what push a model into its CGI mode). The subject is the
+// same cassette megastructure; only the language changed.
 const OWNER_HOUSE_PROMPT =
-  'a colossal futuristic building shaped like a giant retro cassette tape, its two tape reels forming vast circular glass atriums, weathered board-formed concrete and steel, hyper-realistic materials with natural imperfections, surreal ominous megastructure, photorealistic architectural photograph, looks like a real photo, no text, no watermark'
+  'a huge weathered concrete building whose long facade is shaped like a cassette tape, two enormous circular windows where the reels would be, streaked board-formed concrete, rust-stained steel, dirt and water marks, a cracked car park and an ordinary road in front of it, architectural photograph'
 
 type Props = {
   projectId: string
@@ -73,7 +79,12 @@ export default function ArtworkGenerator({
   )
   const [model, setModel] = useState<string>(IMAGE_MODELS[0].id)
   const [vary, setVary] = useState(true)
+  // Film finish (server-side grain / vignette / muted palette) — on by default;
+  // it's the pass that takes the AI sheen off. `finish: 'none'` opts out.
+  const [filmFinish, setFilmFinish] = useState(true)
   const [lastLook, setLastLook] = useState<string | null>(null)
+  const [lastPrompt, setLastPrompt] = useState<string | null>(null)
+  const [showLastPrompt, setShowLastPrompt] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
@@ -193,7 +204,7 @@ export default function ArtworkGenerator({
       const res = await fetch('/api/generate-artwork', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project_id: projectId, prompt, model, vary, title: projectTitle }),
+        body: JSON.stringify({ project_id: projectId, prompt, model, vary, finish: filmFinish ? 'film' : 'none', title: projectTitle }),
       })
 
       const data = await res.json().catch(() => null)
@@ -202,6 +213,7 @@ export default function ArtworkGenerator({
         // Server cleared finalized_artwork_url; mirror that in client state.
         onFinalizedUpdated(null)
         setLastLook(data.look ?? null)
+        setLastPrompt(typeof data.prompt_used === 'string' ? data.prompt_used : null)
         setMode('idle')
       } else {
         setError(data?.error ?? 'Generation failed. Try again.')
@@ -290,6 +302,20 @@ export default function ArtworkGenerator({
           it does, and what to re-roll for */}
       {lastLook && mode === 'idle' && (
         <p className="text-[10px] text-[#666] leading-snug">Look: {lastLook}</p>
+      )}
+      {/* The exact prompt that ran — so the artist can see what the server
+          added (and stripped) and steer the next run. */}
+      {lastPrompt && mode === 'idle' && (
+        <div className="text-[10px] text-[#666] leading-snug">
+          <button
+            type="button"
+            onClick={() => setShowLastPrompt(v => !v)}
+            className="underline decoration-dotted hover:text-[#999] transition-colors"
+          >
+            {showLastPrompt ? 'Hide prompt sent' : 'Show prompt sent'}
+          </button>
+          {showLastPrompt && <p className="mt-1 break-words">{lastPrompt}</p>}
+        </div>
       )}
 
       {/* Download — generated/source image and the finalized render (with
@@ -563,13 +589,24 @@ export default function ArtworkGenerator({
             <span className={`w-8 h-4 rounded-full relative transition-colors ${vary ? 'bg-[#2dd4bf]' : 'bg-[#2a2a2a]'}`}>
               <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${vary ? 'left-4' : 'left-0.5'}`} />
             </span>
-            Vary the look (random lens, light &amp; mood each run)
+            Vary the look (random camera, light &amp; weather each run)
+          </button>
+          {/* Film finish toggle — server adds grain, a soft vignette and a
+              slightly muted palette after generation. Off = untouched pixels. */}
+          <button
+            onClick={() => setFilmFinish(v => !v)}
+            className="flex items-center gap-2 text-[11px] text-[#999] hover:text-white transition-colors"
+          >
+            <span className={`w-8 h-4 rounded-full relative transition-colors ${filmFinish ? 'bg-[#2dd4bf]' : 'bg-[#2a2a2a]'}`}>
+              <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${filmFinish ? 'left-4' : 'left-0.5'}`} />
+            </span>
+            Film finish (grain, vignette &amp; muted colour — hides the AI sheen)
           </button>
           <textarea
             value={prompt}
             onChange={e => setPrompt(e.target.value)}
             rows={3}
-            placeholder="Describe the artwork — subject, style, mood (e.g. 'neon-lit rooftop at dusk, film grain, moody')"
+            placeholder="Describe it like a photo caption — what, where, light (e.g. 'an old cassette on a car dashboard, overcast light, faded colours'). Skip words like 8k or hyper-realistic; they make it look AI."
             className="w-full bg-[#0f0f0f] border border-[#222] rounded-xl px-3 py-2 text-xs text-white placeholder-[#444] focus:outline-none focus:border-[#2dd4bf]/40 resize-none"
           />
           {error && <p className="text-red-400 text-xs">{error}</p>}

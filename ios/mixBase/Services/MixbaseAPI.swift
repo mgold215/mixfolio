@@ -55,12 +55,12 @@ final class MixbaseAPI {
     }
 
     static let imageModels: [ImageModel] = [
-        ImageModel(id: "flux-ultra",   label: "FLUX Ultra Raw"),
-        ImageModel(id: "seedream",     label: "Seedream 4"),
-        ImageModel(id: "imagen-ultra", label: "Imagen 4 Ultra"),
-        ImageModel(id: "recraft",      label: "Recraft V3"),
-        ImageModel(id: "flux",         label: "Flux 2 Pro"),
-        ImageModel(id: "imagen",       label: "Imagen 4"),
+        ImageModel(id: "flux-ultra", label: "FLUX Ultra Raw"),
+        ImageModel(id: "nano-pro",   label: "Nano Banana Pro"),
+        ImageModel(id: "flux-krea",  label: "FLUX Krea"),
+        ImageModel(id: "seedream",   label: "Seedream 4"),
+        ImageModel(id: "flux",       label: "Flux 2 Pro"),
+        ImageModel(id: "nano",       label: "Nano Banana 2"),
     ]
 
     // MARK: - Artwork
